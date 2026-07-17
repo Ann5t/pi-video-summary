@@ -1,0 +1,27 @@
+{
+	"name": "pi-video-summary",
+	"version": "0.1.0",
+	"description": "Local-first video summarization for pi: faster-whisper GPU transcription + AI proofreading with a learning dictionary + keyframe vision + illustrated self-contained HTML report. Local files, bilibili & youtube URLs.",
+	"keywords": [
+		"pi-package"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Ann5t/pi-video-summary-locally.git"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"scripts": {
+		"postinstall": "bash install.sh || echo '[video-summary] run manually: bash install.sh'"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	}
+}

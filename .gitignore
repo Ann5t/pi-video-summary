@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+
+# NOTE: all mutable state (python venv, whisper models, config.json,
+# dictionary.json) lives outside the repo in
+# ${XDG_DATA_HOME:-~/.local/share}/pi-video-summary/ so `pi update`
+# re-clones never wipe it. Do not commit local state here.
