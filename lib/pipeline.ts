@@ -11,6 +11,7 @@ import {
 	describeFrames,
 	generateSummary,
 	makeAiContext,
+	makeAiContextForModel,
 	proofreadTranscript,
 } from "./ai.js";
 import type { AiContext, FrameNote, SummaryJson } from "./ai.js";
@@ -63,6 +64,12 @@ export interface PipelineResult {
 	visionSkippedReason?: string;
 	videoDurationSec: number;
 	llmModel: string;
+	/** Model used for proofreading ("provider/id" or "session" for current). */
+	proofreadModel: string;
+	/** Model used for vision ("provider/id" or "session" for current). */
+	visionModel: string;
+	/** Model used for summary ("provider/id" or "session" for current). */
+	summaryModel: string;
 	warnings: string[];
 }
 
@@ -148,14 +155,32 @@ export async function runPipeline(
 			`(${transcript.deviceUsed}/${transcript.computeTypeUsed})`,
 	);
 
-	// ---- 3. AI context (the only paid step) --------------------------------
-	const aiOrErr = await makeAiContext(ctx);
-	if ("error" in aiOrErr) {
-		throw new Error(`Cannot reach the current model: ${aiOrErr.error}`);
+	// ---- 3. AI contexts (per-phase model resolution) -------------------------
+	// Helper: create an AI context for a config model spec, or fall back
+	// to the current session model.
+	async function resolveAi(modelSpec: string, phase: string): Promise<{
+		ai: AiContext;
+		modelUsed: string;
+	}> {
+		if (modelSpec) {
+			const r = await makeAiContextForModel(ctx, modelSpec);
+			if (!("error" in r)) {
+				return { ai: r.ai, modelUsed: modelSpec };
+			}
+			warnings.push(`${phase}: configured model "${modelSpec}" unavailable (${r.error}), falling back to session model`);
+			io.log(`${phase}: ${r.error} — falling back to session model`);
+		}
+		const fallback = await makeAiContext(ctx);
+		if ("error" in fallback) {
+			throw new Error(`Cannot reach the current model: ${fallback.error}`);
+		}
+		return { ai: fallback.ai, modelUsed: "session" };
 	}
-	const ai: AiContext = aiOrErr.ai;
+
+	// Resolve LLM context (shared by proofreading + summary)
+	const llmCtx = await resolveAi(cfg.llm.model, "llm");
 	io.log(
-		`LLM: ${ai.modelId}${ai.visionCapable ? " (vision)" : " (text-only)"}`,
+		`text model (校对+总结): ${llmCtx.modelUsed === "session" ? llmCtx.ai.modelId : llmCtx.modelUsed}`,
 	);
 
 	// ---- 4. AI proofreading + dictionary learning ---------------------------
@@ -163,7 +188,7 @@ export async function runPipeline(
 	if (cfg.proofread.enabled && !tx.fromCache) {
 		io.stage("AI 校对转录文本");
 		const pr = await proofreadTranscript(
-			ai,
+			llmCtx.ai,
 			transcript.segments,
 			dictionary,
 			cfg,
@@ -194,10 +219,15 @@ export async function runPipeline(
 	// ---- 5. Vision pass ------------------------------------------------------
 	let frameNotes: FrameNote[] = [];
 	let visionSkippedReason: string | undefined;
+	const visionCtx = await resolveAi(cfg.vision.model, "vision");
+	io.log(
+		`vision model: ${visionCtx.modelUsed === "session" ? visionCtx.ai.modelId : visionCtx.modelUsed}${visionCtx.ai.visionCapable ? " (vision)" : " (text-only)"}`,
+	);
+
 	if (!cfg.vision.enabled) {
 		visionSkippedReason = "disabled in config";
-	} else if (!ai.visionCapable) {
-		visionSkippedReason = `current model ${ai.modelId} has no image input`;
+	} else if (!visionCtx.ai.visionCapable) {
+		visionSkippedReason = `model ${visionCtx.modelUsed === "session" ? visionCtx.ai.modelId : visionCtx.modelUsed} has no image input`;
 	} else if (!force && existsSync(workDir.visionPath)) {
 		try {
 			frameNotes = JSON.parse(
@@ -222,7 +252,7 @@ export async function runPipeline(
 				signal,
 			);
 			io.log(`sampled ${frames.length} frames`);
-			frameNotes = await describeFrames(ai, frames, cfg, io.log, signal);
+			frameNotes = await describeFrames(visionCtx.ai, frames, cfg, io.log, signal);
 			writeFileSync(
 				workDir.visionPath,
 				JSON.stringify(frameNotes, null, 1),
@@ -239,29 +269,35 @@ export async function runPipeline(
 	}
 
 	// ---- 6. Structured summary ------------------------------------------------
+	// Use the same LLM model as proofreading
 	let summary: SummaryJson | null = null;
+	const summaryModelId = llmCtx.modelUsed === "session" ? llmCtx.ai.modelId : llmCtx.modelUsed;
 	if (!force && existsSync(workDir.summaryPath)) {
 		try {
 			const cached = JSON.parse(readFileSync(workDir.summaryPath, "utf8")) as {
 				language?: string;
+				model?: string;
 				summary?: SummaryJson;
 			};
 			const wantLang =
 				cfg.summary.language !== "auto"
 					? cfg.summary.language
 					: transcript.language;
-			if (cached.summary && cached.language === wantLang) {
+			if (cached.summary && cached.language === wantLang && cached.model === summaryModelId) {
 				summary = cached.summary;
 				io.log("summary: using cached result");
+			} else if (cached.summary) {
+				io.log("summary cache: language or model changed, regenerating");
 			}
 		} catch {
 			// regenerate
 		}
 	}
+
 	if (!summary) {
 		io.stage("生成结构化总结");
 		summary = await generateSummary(
-			ai,
+			llmCtx.ai,
 			{
 				sourceName: displayName,
 				durationSec,
@@ -281,6 +317,7 @@ export async function runPipeline(
 						cfg.summary.language !== "auto"
 							? cfg.summary.language
 							: transcript.language,
+					model: summaryModelId,
 					summary,
 				},
 				null,
@@ -336,7 +373,11 @@ export async function runPipeline(
 		language: transcript.language,
 		whisperModel: transcript.model,
 		whisperDevice: `${transcript.deviceUsed}/${transcript.computeTypeUsed}`,
-		llmModel: ai.modelId,
+		llmModel: llmCtx.modelUsed === "session" ? llmCtx.ai.modelId : llmCtx.modelUsed,
+		proofreadModel:
+			llmCtx.modelUsed === "session" ? llmCtx.ai.modelId : llmCtx.modelUsed,
+		visionModel:
+			visionCtx.modelUsed === "session" ? visionCtx.ai.modelId : visionCtx.modelUsed,
 		summary,
 		chapterImages,
 		transcript: transcript.segments,
@@ -368,7 +409,12 @@ export async function runPipeline(
 		frameNotes,
 		visionSkippedReason,
 		videoDurationSec: durationSec,
-		llmModel: ai.modelId,
+		proofreadModel:
+			llmCtx.modelUsed === "session" ? llmCtx.ai.modelId : llmCtx.modelUsed,
+		visionModel:
+			visionCtx.modelUsed === "session" ? visionCtx.ai.modelId : visionCtx.modelUsed,
+		summaryModel:
+			llmCtx.modelUsed === "session" ? llmCtx.ai.modelId : llmCtx.modelUsed,
 		warnings,
 	};
 }

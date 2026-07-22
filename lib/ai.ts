@@ -30,6 +30,12 @@ type RegistryResult = {
 	error?: string;
 };
 
+interface ModelRegistry {
+	find(provider: string, modelId: string): CompleteModel | undefined;
+	getApiKeyAndHeaders(m: CompleteModel): Promise<RegistryResult>;
+	getAvailable(): CompleteModel[];
+}
+
 /** Build an AI context from the *current* pi model (the only paid step). */
 export async function makeAiContext(
 	ctx: ExtensionContext,
@@ -37,14 +43,53 @@ export async function makeAiContext(
 	const model = ctx.model as CompleteModel | undefined;
 	if (!model) return { error: "No active model in this session" };
 
-	const registry = ctx.modelRegistry as unknown as {
-		getApiKeyAndHeaders(m: CompleteModel): Promise<RegistryResult>;
-	};
+	const registry = ctx.modelRegistry as unknown as ModelRegistry;
 	const auth = await registry.getApiKeyAndHeaders(model);
 	if (!auth.ok) return { error: auth.error ?? "Model authentication failed" };
 	if (!auth.apiKey)
 		return { error: "No API key available for the current model" };
 
+	return buildAiContext(model, auth, registry);
+}
+
+/**
+ * Build an AI context for a specific model by "provider/modelId" spec.
+ * Returns error if the model is not found or has no auth.
+ */
+export async function makeAiContextForModel(
+	ctx: ExtensionContext,
+	modelSpec: string,
+): Promise<{ ai: AiContext } | { error: string }> {
+	if (!modelSpec) return { error: "Empty model spec" };
+
+	const slashIdx = modelSpec.indexOf("/");
+	if (slashIdx < 0) {
+		return {
+			error: `Invalid model spec "${modelSpec}". Use "provider/modelId" format, e.g. "zhipu/glm-4v-plus".`,
+		};
+	}
+
+	const provider = modelSpec.slice(0, slashIdx);
+	const modelId = modelSpec.slice(slashIdx + 1);
+	const registry = ctx.modelRegistry as unknown as ModelRegistry;
+
+	const model = registry.find(provider, modelId);
+	if (!model) {
+		return { error: `Model "${modelSpec}" not found. Use /video-summary-models to list available models.` };
+	}
+
+	const auth = await registry.getApiKeyAndHeaders(model);
+	if (!auth.ok) return { error: auth.error ?? `Model "${modelSpec}" authentication failed` };
+	if (!auth.apiKey) return { error: `No API key available for "${modelSpec}"` };
+
+	return buildAiContext(model, auth, registry);
+}
+
+function buildAiContext(
+	model: CompleteModel,
+	auth: RegistryResult,
+	_registry: ModelRegistry,
+): { ai: AiContext } {
 	const input = (model as { input?: unknown }).input;
 	const visionCapable = Array.isArray(input) && input.includes("image");
 	const modelId = `${(model as { provider?: string }).provider ?? "?"}/${(model as { id?: string }).id ?? "?"}`;
@@ -63,6 +108,48 @@ export async function makeAiContext(
 			useRawAnthropicVision: false,
 		},
 	};
+}
+
+/**
+ * List all available models (with valid auth) from the model registry,
+ * grouped by provider.
+ */
+export function listAvailableModels(ctx: ExtensionContext): Array<{
+	provider: string;
+	modelId: string;
+	label: string;
+	visionCapable: boolean;
+}> {
+	const registry = ctx.modelRegistry as unknown as ModelRegistry;
+	const available = registry.getAvailable();
+
+	const result: Array<{
+		provider: string;
+		modelId: string;
+		label: string;
+		visionCapable: boolean;
+	}> = [];
+
+	for (const m of available) {
+		const provider = (m as { provider?: string }).provider ?? "?";
+		const id = (m as { id?: string }).id ?? "?";
+		const input = (m as { input?: unknown }).input;
+		const visionCapable = Array.isArray(input) && input.includes("image");
+		result.push({
+			provider,
+			modelId: `${provider}/${id}`,
+			label: `${provider}/${id}`,
+			visionCapable,
+		});
+	}
+
+	// Sort by provider, then model id
+	result.sort((a, b) => {
+		const pc = a.provider.localeCompare(b.provider);
+		return pc !== 0 ? pc : a.modelId.localeCompare(b.modelId);
+	});
+
+	return result;
 }
 
 export interface ImagePayload {

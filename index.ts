@@ -13,6 +13,7 @@ import {
 	saveDictionary,
 } from "./lib/dictionary.js";
 import type { DictEntry } from "./lib/dictionary.js";
+import { listAvailableModels } from "./lib/ai.js";
 import { getPaths } from "./lib/paths.js";
 import { runPipeline } from "./lib/pipeline.js";
 import { fmtTime } from "./lib/util.js";
@@ -33,6 +34,9 @@ interface VsDetails {
 	imagesEmbedded: number;
 	visionNoteCount: number;
 	visionSkippedReason?: string;
+	proofreadModel: string;
+	visionModel: string;
+	summaryModel: string;
 	warnings: string[];
 }
 
@@ -144,7 +148,7 @@ export default function (pi: ExtensionAPI) {
 	// ------------------------------------------------------------------ config command
 	pi.registerCommand("video-summary-config", {
 		description:
-			"查看/编辑 video-summary 配置（转录、取帧、校对、输出等所有可配置项）",
+			"查看/编辑 video-summary 配置（转录、取帧、校对、模型、输出等所有可配置项）",
 		handler: async (_args, ctx) => {
 			const cfgPath = join(PATHS.dataDir, "config.json");
 			if (!ctx.hasUI) {
@@ -153,22 +157,82 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const current = JSON.stringify(loadConfig(), null, 2);
+			const cfg = loadConfig();
+			const hint =
+				`可用模型: /video-summary-models\n` +
+				`在 llm.model (校对+总结) / vision.model (画面理解) 中设置\n` +
+				`格式: "provider/modelId"，空字符串=使用当前会话模型\n\n`;
+			const current = hint + JSON.stringify(cfg, null, 2);
 			const edited = await ctx.ui.editor(
 				"编辑 video-summary 配置（保存并退出以应用）",
 				current,
 			);
 			if (edited === undefined) return;
+			// Strip the hint lines if user didn't remove them
+			const lines = edited.split("\n");
+			const jsonStart = lines.findIndex((l) => l.startsWith("{"));
+			const jsonText = jsonStart >= 0 ? lines.slice(jsonStart).join("\n") : edited;
 			try {
-				JSON.parse(edited); // validate
+				JSON.parse(jsonText); // validate
 				const { writeFileSync } = await import("node:fs");
-				writeFileSync(cfgPath, edited, "utf8");
+				writeFileSync(cfgPath, jsonText, "utf8");
 				ctx.ui.notify("配置已保存，下次运行时生效", "info");
 			} catch (e) {
 				ctx.ui.notify(
 					`JSON 无效，未保存: ${e instanceof Error ? e.message : e}`,
 					"error",
 				);
+			}
+		},
+	});
+
+	// ------------------------------------------------------------------ list models command
+	pi.registerCommand("video-summary-models", {
+		description:
+			"列出 pi 中已登录可用的模型，用于配置 video-summary 的各个阶段模型",
+		handler: async (_args, ctx) => {
+			const models = listAvailableModels(ctx);
+			if (models.length === 0) {
+				const msg =
+					"没有找到已认证可用的模型。请先在 pi 中登录 (例如 /login anthropic) 或配置 API key。";
+				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+				else console.log(msg);
+				return;
+			}
+
+			// Group by provider
+			const byProvider = new Map<string, typeof models>();
+			for (const m of models) {
+				const list = byProvider.get(m.provider) ?? [];
+				list.push(m);
+				byProvider.set(m.provider, list);
+			}
+
+			const lines: string[] = [
+				`可用模型 (${models.length} 个, 已登录的渠道):`,
+				`使用 /video-summary-config 配置 llm.model (校对+总结) / vision.model (画面理解)`,
+				`格式: "provider/modelId"，例如 "zhipu/glm-4v-plus"`,
+				"",
+			];
+
+			for (const [provider, ms] of byProvider) {
+				lines.push(`  ${provider}:`);
+				for (const m of ms) {
+					const visionTag = m.visionCapable ? " 📷" : "";
+					lines.push(`    - ${m.modelId}${visionTag}`);
+				}
+				lines.push("");
+			}
+
+			lines.push("📷 = 支持图像/画面理解");
+			lines.push("提示: 选择 vision.model 时请选带 📷 标记的模型");
+
+			const output = lines.join("\n");
+
+			if (ctx.hasUI) {
+				await ctx.ui.editor("可用模型列表（只读，ESC 关闭）", output);
+			} else {
+				console.log(output);
 			}
 		},
 	});
@@ -256,6 +320,10 @@ export default function (pi: ExtensionAPI) {
 			);
 
 			const s = result.summary;
+			const modelInfo = `
+模型:
+  文本(校对+总结): ${result.proofreadModel}
+  画面: ${result.visionModel}`;
 			const details: VsDetails = {
 				htmlPath: result.htmlPath,
 				title: s.title,
@@ -275,6 +343,9 @@ export default function (pi: ExtensionAPI) {
 					.length,
 				visionNoteCount: result.frameNotes.length,
 				visionSkippedReason: result.visionSkippedReason,
+				proofreadModel: result.proofreadModel,
+				visionModel: result.visionModel,
+				summaryModel: result.summaryModel,
 				warnings: result.warnings,
 			};
 
@@ -292,6 +363,8 @@ export default function (pi: ExtensionAPI) {
 							`AI 校对修正: ${result.corrections.map((c) => `${c.wrong}→${c.correct}`).join(", ")}`,
 						]
 					: []),
+				``,
+				`模型: 文本(校对+总结)=${result.proofreadModel} 画面=${result.visionModel}`,
 				...(result.warnings.length > 0
 					? [``, `警告: ${result.warnings.join("; ")}`]
 					: []),
@@ -349,6 +422,7 @@ export default function (pi: ExtensionAPI) {
 				if (d.visionSkippedReason) {
 					out += `\n${theme.fg("warning", `画面理解已跳过: ${d.visionSkippedReason}`)}`;
 				}
+				out += `\n${theme.fg("dim", `模型: 文本(校对+总结) ${d.proofreadModel} | 画面 ${d.visionModel}`)}`;
 			}
 			return new Text(out, 0, 0);
 		},

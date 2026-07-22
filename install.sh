@@ -125,7 +125,8 @@ if [[ ! -f "${DATA_DIR}/config.json" ]]; then
 	cat >"${DATA_DIR}/config.json" <<'JSON'
 {
   "transcribe": { "model": "large-v3-turbo", "device": "auto", "computeType": "auto", "language": "auto" },
-  "vision":     { "enabled": true, "intervalSec": 30, "maxFrames": 24 },
+  "llm":        { "model": "" },
+  "vision":     { "enabled": true, "intervalSec": 30, "maxFrames": 24, "model": "" },
   "proofread":  { "enabled": true, "applyDictionary": true, "learnToDictionary": true },
   "summary":    { "language": "auto", "imagesInReport": 8 },
   "output":     { "dir": "", "openAfterGenerate": true }

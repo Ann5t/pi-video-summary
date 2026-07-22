@@ -19,8 +19,15 @@ export interface VideoSummaryConfig {
 		batched: boolean;
 		batchSize: number;
 	};
+	/**
+	 * AI text model shared by proofreading and summary: "provider/modelId".
+	 * Empty string = use the current pi session model.
+	 */
+	llm: {
+		model: string;
+	};
 	vision: {
-		/** Extract keyframes and describe them with the current model (needs image input). */
+		/** Extract keyframes and describe them with an AI model (needs image input). */
 		enabled: boolean;
 		/** Sample one frame every N seconds. */
 		intervalSec: number;
@@ -30,6 +37,11 @@ export interface VideoSummaryConfig {
 		frameWidth: number;
 		/** Images per model call. */
 		batchSize: number;
+		/**
+		 * AI model for vision understanding: "provider/modelId" (e.g. "zhipu/glm-4v-plus").
+		 * Empty string = use the current pi session model.
+		 */
+		model: string;
 	};
 	proofread: {
 		/** Ask the model to find likely ASR mistakes (terms, names, homophones). */
@@ -81,12 +93,16 @@ export const DEFAULT_CONFIG: VideoSummaryConfig = {
 		batched: true,
 		batchSize: 16,
 	},
+	llm: {
+		model: "",
+	},
 	vision: {
 		enabled: true,
 		intervalSec: 30,
 		maxFrames: 24,
 		frameWidth: 768,
 		batchSize: 6,
+		model: "",
 	},
 	proofread: {
 		enabled: true,

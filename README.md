@@ -40,9 +40,9 @@ git clone https://github.com/Ann5t/pi-video-summary-locally.git ~/.pi/agent/exte
 | 获取视频 | 本地路径直接用；URL 用 yt-dlp 下载（≤1080p） | 免费 |
 | 音频提取 | ffmpeg → 16kHz mono wav | 免费 |
 | 转录 | faster-whisper，CUDA 加速（自动降级 CPU），词级时间戳 | 免费·本地 |
-| AI 校对 | 当前 pi 模型挑错（同音字/术语/品牌），修正对自动存入本地词典 `dictionary.json`，下次转录自动应用 + 作为 whisper initial_prompt | 唯一付费点 |
-| 画面理解 | 每 N 秒抽帧 → 当前模型（需支持图像输入）描述场景/屏幕文字 | 唯一付费点 |
-| 结构化总结 | 当前模型输出 JSON：标题、TL;DR、章节（含时间戳）、要点、金句、配图时间点 | 唯一付费点 |
+| AI 校对 | 可选模型（默认当前 pi 模型）挑错（同音字/术语/品牌），修正对自动存入本地词典 `dictionary.json` | 唯一付费点 |
+| 画面理解 | 每 N 秒抽帧 → 可选模型（需支持图像输入）描述场景/屏幕文字 | 唯一付费点 |
+| 结构化总结 | 可选模型输出 JSON：标题、TL;DR、章节（含时间戳）、要点、金句、配图时间点 | 唯一付费点 |
 | 精确取帧 | 按总结标注的时间戳用 ffmpeg `-ss` 精确截取高清帧（非预采样帧） | 免费 |
 | HTML 报告 | 自包含单文件：base64 内嵌图片、章节导航、可折叠完整文稿 | 免费 |
 
@@ -53,6 +53,7 @@ git clone https://github.com/Ann5t/pi-video-summary-locally.git ~/.pi/agent/exte
 /video-summary "https://www.bilibili.com/video/BV..." [--force]
 /video-summary "https://www.youtube.com/watch?v=..."
 /video-summary-config                        # 所有环节的可配置项
+/video-summary-models                        # 列出 pi 中已登录可用的模型
 /video-dict                                  # 查看/编辑纠错词典
 ```
 
@@ -63,12 +64,15 @@ git clone https://github.com/Ann5t/pi-video-summary-locally.git ~/.pi/agent/exte
 配置文件在数据目录 `${XDG_DATA_HOME:-~/.local/share}/pi-video-summary/config.json`（也可在 pi 里用 `/video-summary-config` 直接编辑）。所有默认值见 `lib/config.ts` 的 `DEFAULT_CONFIG`，`config.json` 只需写要覆盖的项：
 
 - `transcribe.model/device/computeType/language/beamSize/vad/batched`
-- `vision.enabled/intervalSec/maxFrames/frameWidth/batchSize`
+- **`llm.model`** 🆕 — 文本模型（校对 + 总结共用），格式 `"provider/modelId"`，留空=使用当前会话模型
+- `vision.enabled/intervalSec/maxFrames/frameWidth/batchSize` + **`vision.model`** 🆕 — 画面理解用模型，需支持图像输入
 - `proofread.enabled/applyDictionary/learnToDictionary/chunkChars`
 - `summary.language/maxTranscriptChars/imagesInReport`
 - `frames.reportWidth/jpegQuality`
 - `download.maxHeight/format/extraArgs`
 - `output.dir/openAfterGenerate`
+
+> **模型选择：** 先用 `/video-summary-models` 查看已在 pi 登录的可用模型，然后设置 `llm.model` 和 `vision.model`。
 
 ## 缓存
 
